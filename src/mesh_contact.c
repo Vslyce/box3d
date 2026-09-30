@@ -78,8 +78,11 @@ static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTr
 
 	b3MeshContact* meshContact = &contact->meshContact;
 
-	// If the dynamic body didn't move out of the cached query bounds we are done!
-	if ( b3AABB_Contains( meshContact->queryBounds, *bounds ) )
+	// Cache coverage belongs to the mesh frame. World-space coverage misses
+	// triangles when a kinematic mesh moves beneath a stationary convex body.
+	b3Transform meshTransform = b3ToRelativeTransform( xfA, b3Pos_zero );
+	b3AABB localBounds = b3AABB_Transform( b3InvertTransform( meshTransform ), *bounds );
+	if ( b3AABB_Contains( meshContact->queryBounds, localBounds ) )
 	{
 		if ( shapeA->type == b3_meshShape )
 		{
@@ -96,18 +99,15 @@ static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTr
 	// Enlarge to the query bounds to absorb small movement
 	float radius = B3_MAX_AABB_MARGIN + B3_SPECULATIVE_DISTANCE;
 	b3Vec3 extension = { radius, radius, radius };
-	meshContact->queryBounds.lowerBound = b3Sub( bounds->lowerBound, extension );
-	meshContact->queryBounds.upperBound = b3Add( bounds->upperBound, extension );
+	meshContact->queryBounds.lowerBound = b3Sub( localBounds.lowerBound, extension );
+	meshContact->queryBounds.upperBound = b3Add( localBounds.upperBound, extension );
 
 	// Query triangles
 	int triangleCapacity = B3_MAX_MESH_CONTACT_TRIANGLES;
 
 	int triangleIndices[B3_MAX_MESH_CONTACT_TRIANGLES];
 
-	// Bounds are in world space. Convert to the local mesh frame. The broadphase bounds are float,
-	// so the demoted mesh transform is the matching float world frame (exact in float mode).
-	b3Transform meshTransform = b3ToRelativeTransform( xfA, b3Pos_zero );
-	b3AABB localBounds = b3AABB_Transform( b3InvertTransform( meshTransform ), meshContact->queryBounds );
+	localBounds = meshContact->queryBounds;
 	int triangleCount;
 	if ( shapeA->type == b3_meshShape )
 	{

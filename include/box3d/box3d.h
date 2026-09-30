@@ -52,6 +52,15 @@ B3_API bool b3World_IsValid( b3WorldId id );
 /// @param subStepCount The number of sub-steps, increasing the sub-step count can increase accuracy. Usually 4.
 B3_API void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount );
 
+/// Bounded read-only sweep query for a small world containing kinematic meshes and convex dynamic bodies.
+/// Predicts both bodies from current velocities (and dynamic linear force/gravity) over timeStep.
+/// Returns the earliest positive impact fraction, or 1 when no new impact occurs. Initial overlaps remain
+/// the contact solver's responsibility. This query alone does not apply impulses or advance any body.
+/// A caller can advance the WHOLE world to this fraction, then solve the remaining interval with fresh contacts.
+/// maxPairs bounds work; false means invalid input, an unsupported shape/filter, or exhausted capacity.
+/// Output is unchanged on failure. This is an opt-in bounded path, not unrestricted moving-mesh CCD.
+B3_API bool b3World_QueryKinematicMeshImpact( b3WorldId worldId, float timeStep, int maxPairs, float* fraction, int* pairCount );
+
 /// Call this to draw shapes and other debug draw data
 B3_API void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits );
 
@@ -838,7 +847,9 @@ B3_API b3ShapeId b3CreateTransformedHullShape( b3BodyId bodyId, const b3ShapeDef
 
 /// Create a mesh hull shape and attach it to a body. The shape definition is fully cloned but the mesh is not.
 /// Contacts are not created until the next time step.
-/// Mesh collision only creates contacts on static bodies.
+/// Static meshes are supported. Kinematic meshes also generate convex contacts;
+/// bounded relative-motion callers should use b3World_QueryKinematicMeshImpact
+/// and advance the whole world to new impacts. Dynamic meshes are unsupported.
 /// @warning this holds reference to the input mesh data which must remain valid for the lifetime of this shape
 /// @return the shape id for accessing the shape
 B3_API b3ShapeId b3CreateMeshShape( b3BodyId bodyId, const b3ShapeDef* def, const b3MeshData* mesh, b3Vec3 scale );

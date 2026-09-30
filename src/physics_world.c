@@ -1031,6 +1031,112 @@ static void b3Collide( b3StepContext* context )
 	b3TracyCZoneEnd( collide );
 }
 
+static bool b3WakeMovingMeshNeighbor( int proxyId, uint64_t shapeId, void* context )
+{
+	B3_UNUSED( proxyId );
+	b3World* world = context;
+	b3Shape* shape = b3Array_Get( world->shapes, (int)shapeId );
+	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
+	if ( body->type == b3_dynamicBody )
+	{
+		b3WakeBody( world, body );
+	}
+	return true;
+}
+
+// A stationary sleeping convex body has no sweep of its own. Wake potential
+// neighbors of a moving mesh before narrow phase, including angular-only
+// motion. The bound is conservative; no ownership/contact decision uses it.
+static void b3WakeMovingMeshNeighbors( b3World* world, float timeStep )
+{
+	for ( int i = 0; i < world->bodies.count; ++i )
+	{
+		b3Body* body = b3Array_Get( world->bodies, i );
+		if ( body->id != i || body->type != b3_kinematicBody || body->setIndex != b3_awakeSet ) continue;
+		b3BodySim* sim = b3GetBodySim( world, body );
+		b3BodyState* state = b3GetBodyState( world, body );
+		float travel = timeStep * ( b3Length( state->linearVelocity ) +
+			b3Length( state->angularVelocity ) * b3Length( sim->maxExtent ) );
+		if ( travel <= 0.0f ) continue;
+		float margin = travel + B3_SPECULATIVE_DISTANCE;
+		b3Vec3 extension = { margin, margin, margin };
+		int shapeId = body->headShapeId;
+		while ( shapeId != B3_NULL_INDEX )
+		{
+			b3Shape* shape = b3Array_Get( world->shapes, shapeId );
+			shapeId = shape->nextShapeId;
+			if ( shape->type != b3_meshShape ) continue;
+			b3AABB swept = { b3Sub( shape->aabb.lowerBound, extension ), b3Add( shape->aabb.upperBound, extension ) };
+			b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, swept, shape->filter.maskBits,
+				false, b3WakeMovingMeshNeighbor, world );
+		}
+	}
+}
+
+static b3Sweep b3PredictMeshQuerySweep( b3World* world, b3Body* body, b3Pos base, float timeStep )
+{
+	b3BodySim* sim = b3GetBodySim( world, body );
+	b3BodyState* state = b3GetBodyState( world, body );
+	b3Vec3 velocity = state ? state->linearVelocity : b3Vec3_zero;
+	b3Vec3 angular = state ? state->angularVelocity : b3Vec3_zero;
+	if ( body->type == b3_dynamicBody )
+	{
+		b3Vec3 acceleration = b3Add( b3MulSV( sim->invMass, sim->force ), b3MulSV( sim->gravityScale, world->gravity ) );
+		velocity = b3MulAdd( velocity, timeStep, acceleration );
+	}
+	b3Sweep sweep;
+	sweep.c1 = b3SubPos( sim->center, base );
+	sweep.c2 = b3MulAdd( sweep.c1, timeStep, velocity );
+	sweep.q1 = sim->transform.q;
+	sweep.q2 = b3IntegrateRotation( sweep.q1, b3MulSV( timeStep, angular ) );
+	sweep.localCenter = sim->localCenter;
+	return sweep;
+}
+
+bool b3World_QueryKinematicMeshImpact( b3WorldId worldId, float timeStep, int maxPairs, float* fraction, int* pairCount )
+{
+	if ( !b3World_IsValid( worldId ) || !b3IsValidFloat( timeStep ) || timeStep <= 0.0f || timeStep > 1.0f / 60.0f ||
+		maxPairs <= 0 || maxPairs > 4096 || fraction == NULL || pairCount == NULL ) return false;
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL ) return false;
+	// Also bound enumeration of filtered/disabled bodies and compound shape
+	// lists; a pair cap alone does not bound those loops in an arbitrary world.
+	if ( world->bodies.count > maxPairs + 1 || world->shapes.count > 2 * maxPairs ) return false;
+	float earliest = 1.0f;
+	int pairs = 0;
+	for ( int a = 0; a < world->bodies.count; ++a )
+	{
+		b3Body* meshBody = world->bodies.data + a;
+		if ( meshBody->id != a || meshBody->type != b3_kinematicBody || meshBody->setIndex != b3_awakeSet ) continue;
+		b3Pos base = b3GetBodySim( world, meshBody )->center;
+		b3Sweep sweepA = b3PredictMeshQuerySweep( world, meshBody, base, timeStep );
+		for ( int sa = meshBody->headShapeId; sa != B3_NULL_INDEX; sa = world->shapes.data[sa].nextShapeId )
+		{
+			b3Shape* meshShape = world->shapes.data + sa;
+			if ( meshShape->type != b3_meshShape || meshShape->sensorIndex != B3_NULL_INDEX ) continue;
+			for ( int b = 0; b < world->bodies.count; ++b )
+			{
+				b3Body* body = world->bodies.data + b;
+				if ( body->id != b || body->type != b3_dynamicBody || body->setIndex == b3_disabledSet ) continue;
+				if ( !b3ShouldBodiesCollide( world, meshBody, body ) ) continue;
+				b3Sweep sweepB = b3PredictMeshQuerySweep( world, body, base, timeStep );
+				for ( int sb = body->headShapeId; sb != B3_NULL_INDEX; sb = world->shapes.data[sb].nextShapeId )
+				{
+					b3Shape* shape = world->shapes.data + sb;
+					if ( shape->sensorIndex != B3_NULL_INDEX || !b3ShouldShapesCollide( meshShape->filter, shape->filter ) ) continue;
+					if ( ++pairs > maxPairs || ( ( meshShape->flags | shape->flags ) & b3_enableCustomFiltering ) != 0 ) return false;
+					if ( shape->type != b3_sphereShape && shape->type != b3_capsuleShape && shape->type != b3_hullShape ) return false;
+					b3TOIOutput impact = b3ShapeRelativeTimeOfImpact( meshShape, shape, &sweepA, &sweepB, earliest );
+					if ( impact.state == b3_toiStateFailed ) return false;
+					if ( impact.fraction > 0.0f && impact.fraction < earliest ) earliest = impact.fraction;
+				}
+			}
+		}
+	}
+	*fraction = earliest; *pairCount = pairs;
+	return true;
+}
+
 void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -1071,6 +1177,7 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	}
 
 	uint64_t stepTicks = b3GetTicks();
+	if ( timeStep > 0.0f ) b3WakeMovingMeshNeighbors( world, timeStep );
 
 	{
 		b3Capacity* c = &world->maxCapacity;

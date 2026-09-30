@@ -29,7 +29,12 @@
 // so this suits embedding more than shipping Box3D as its own DLL.
 //#define BOX3D_EXPORT MYENGINE_API
 
-// Enable assertions when NDEBUG is defined
-// #define B3_ENABLE_ASSERT
+#define B3_ENABLE_ASSERT
 
-// #define B3_RESTITUTION_ITERATIONS
+#if EE_DLL
+#ifdef ESOTERICA_ENGINE_RUNTIME
+#define box3d_EXPORTS
+#else
+#define BOX3D_DLL
+#endif
+#endif

@@ -2073,6 +2073,7 @@ typedef struct b3MeshImpactContext
 	b3Vec3 meshLocalCentroidB1, meshLocalCentroidB2;
 	float fallbackRadius;
 	bool isSensor;
+	bool movingMesh;
 
 	int visitCount;
 } b3MeshImpactContext;
@@ -2099,11 +2100,13 @@ static bool b3MeshTimeOfImpactFcn( b3Vec3 a, b3Vec3 b, b3Vec3 c, int triangleInd
 		return true;
 	}
 
-	if ( toiContext->isSensor == false && offset1 - offset2 < toiContext->fallbackRadius && offset2 > toiContext->fallbackRadius )
-	{
-		// Finished in front
-		return true;
-	}
+	// The centroid's fallback radius is smaller than the actual convex support
+	// extent. It cannot reject short relative sweeps: a slowly approaching face
+	// may already intersect a hull while its centroid remains beyond that radius.
+	// Retain the legacy stationary-mesh path for existing static-world dynamics;
+	// the new relative path must not use that approximation for moving terrain.
+	if ( toiContext->isSensor == false && toiContext->movingMesh == false &&
+		 offset1 - offset2 < toiContext->fallbackRadius && offset2 > toiContext->fallbackRadius ) return true;
 
 	b3Vec3 triangle[3] = { a, b, c };
 	toiContext->toiInput.proxyA.points = triangle;
@@ -2243,7 +2246,7 @@ static bool b3CompoundTimeOfImpactFcn( const b3CompoundData* compound, int child
 	return true;
 }
 
-b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction )
+static b3TOIOutput b3ShapeTimeOfImpactInternal( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction, bool fullRelative )
 {
 	bool isSensor = shapeA->sensorIndex != B3_NULL_INDEX;
 
@@ -2281,8 +2284,8 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 
 	if ( typeA == b3_heightShape || typeA == b3_meshShape )
 	{
-		// todo implement b3MeshTimeOfImpact and b3HeightFieldTimeOfImpact
-		// Note: assuming mesh is static
+		// Candidate coverage must include both mesh and convex sweeps. The
+		// per-triangle TOI already receives both rigid transforms.
 
 		uint64_t ticks = b3GetTicks();
 
@@ -2297,10 +2300,13 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		b3Vec3 localCentroidB = b3GetShapeCentroid( shapeB );
 		context.localCentroidB = localCentroidB;
 
-		// Assume mesh is static
 		b3Transform xfA = {
 			.p = b3Sub( sweepA->c1, b3RotateVector( sweepA->q1, sweepA->localCenter ) ),
 			.q = sweepA->q1,
+		};
+		b3Transform xfA2 = {
+			.p = b3Sub( sweepA->c2, b3RotateVector( sweepA->q2, sweepA->localCenter ) ),
+			.q = sweepA->q2,
 		};
 
 		b3Transform xfB1 = {
@@ -2314,7 +2320,11 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		};
 
 		context.meshLocalCentroidB1 = b3InvTransformPoint( xfA, b3TransformPoint( xfB1, localCentroidB ) );
-		context.meshLocalCentroidB2 = b3InvTransformPoint( xfA, b3TransformPoint( xfB2, localCentroidB ) );
+		context.meshLocalCentroidB2 = b3InvTransformPoint( xfA2, b3TransformPoint( xfB2, localCentroidB ) );
+		float cosine = b3ClampFloat( b3AbsFloat( b3DotQuat( sweepA->q1, sweepA->q2 ) ), 0.0f, 1.0f );
+		b3Quat relativeRotation = b3MulQuat( sweepA->q2, b3Conjugate( sweepA->q1 ) );
+		float sineHalf = b3Length( relativeRotation.v );
+		context.movingMesh = fullRelative || sineHalf > 0.0f || b3LengthSquared( b3Sub( sweepA->c2, sweepA->c1 ) ) > 0.0f;
 
 		b3ShapeExtent extents = b3ComputeShapeExtent( shapeB, context.localCentroidB );
 		context.fallbackRadius = b3MaxFloat( 0.5f * extents.minExtent, B3_LINEAR_SLOP );
@@ -2323,8 +2333,24 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		// todo pass in xfA to get local bounds directly
 		b3AABB bounds = b3ComputeSweptShapeAABB( shapeB, sweepB, maxFraction );
 
-		// Bounds local to mesh
-		b3AABB localBounds = b3AABB_Transform( b3InvertTransform( xfA ), bounds );
+		// Subtract the entire translating COM segment before rotating. Bound
+		// intermediate rotations by the arc from the nearest endpoint (at most
+		// half the shortest quaternion arc). This also catches angular-only
+		// sweeps whose end AABBs do not overlap the convex body.
+		b3AABB relativeBounds = {
+			b3Sub( bounds.lowerBound, b3Max( sweepA->c1, sweepA->c2 ) ),
+			b3Sub( bounds.upperBound, b3Min( sweepA->c1, sweepA->c2 ) ),
+		};
+		b3Transform inverseRotation1 = { b3Vec3_zero, b3Conjugate( sweepA->q1 ) };
+		b3Transform inverseRotation2 = { b3Vec3_zero, b3Conjugate( sweepA->q2 ) };
+		b3AABB localBounds = b3AABB_Union( b3AABB_Transform( inverseRotation1, relativeBounds ),
+			b3AABB_Transform( inverseRotation2, relativeBounds ) );
+		float radius = b3Length( b3Max( b3Abs( relativeBounds.lowerBound ), b3Abs( relativeBounds.upperBound ) ) );
+		// The sine form preserves small natural-spin angles when dot rounds to 1.
+		float arcPadding = radius * ( sineHalf * sqrtf( 2.0f / ( 1.0f + cosine ) ) + 4.0f * FLT_EPSILON );
+		b3Vec3 padding = { arcPadding, arcPadding, arcPadding };
+		localBounds.lowerBound = b3Add( sweepA->localCenter, b3Sub( localBounds.lowerBound, padding ) );
+		localBounds.upperBound = b3Add( sweepA->localCenter, b3Add( localBounds.upperBound, padding ) );
 
 		if ( typeA == b3_meshShape )
 		{
@@ -2373,6 +2399,16 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 #endif
 
 	return output;
+}
+
+b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction )
+{
+	return b3ShapeTimeOfImpactInternal( shapeA, shapeB, sweepA, sweepB, maxFraction, false );
+}
+
+b3TOIOutput b3ShapeRelativeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction )
+{
+	return b3ShapeTimeOfImpactInternal( shapeA, shapeB, sweepA, sweepB, maxFraction, true );
 }
 
 // Resolve the user material id for a hit point on the given shape. Mesh/heightfield shapes
