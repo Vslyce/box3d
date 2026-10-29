@@ -7,6 +7,9 @@
 
 Box3D is a 3D physics engine for games.
 
+This fork adds reusable kinematic-mesh fixes and an opt-in impact query on top of upstream Box3D.
+See [fork changes, API limits, examples, and validation](FORK_CHANGES.md).
+
 [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
 
 ## Features

@@ -48,6 +48,7 @@ set(BOX3D_SOURCE_FILES
 	math_functions.c
 	math_internal.h
 	mesh_contact.c
+	mesh_query.c
 	mesh.c
 	motor_joint.c
 	mover.c

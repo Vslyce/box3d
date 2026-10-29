@@ -1077,6 +1077,8 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	}
 
 	uint64_t stepTicks = b3GetTicks();
+	if ( timeStep > 0.0f )
+		b3WakeMovingMeshNeighbors( world, timeStep );
 
 	{
 		b3Capacity* c = &world->maxCapacity;

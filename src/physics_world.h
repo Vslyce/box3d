@@ -299,6 +299,9 @@ typedef struct b3World
 	bool inUse;
 } b3World;
 
+// Wake filtered sleeping neighbors of awake kinematic meshes before contact generation.
+void b3WakeMovingMeshNeighbors( b3World* world, float timeStep );
+
 b3World* b3GetUnlockedWorldFromId( b3WorldId id );
 b3World* b3GetWorldFromId( b3WorldId id );
 

@@ -108,6 +108,17 @@ bool b3OverlapShape( const b3Shape* shape, b3Transform transform, const b3ShapeP
 float b3GetShapeArea( const b3Shape* shape );
 float b3GetShapeProjectedArea( const b3Shape* shape, b3Vec3 planeNormal );
 b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction );
+// Shared budget/status for an opt-in relative mesh query. A zero maximum means unlimited.
+typedef struct b3MeshImpactBudget
+{
+	int maxTriangles;
+	int triangleCount;
+	b3MeshImpactQueryStatus status;
+} b3MeshImpactBudget;
+
+b3TOIOutput b3ShapeRelativeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA,
+										 b3Sweep* sweepB, float maxFraction,
+										 b3MeshImpactBudget* budget );
 
 int b3CollideMoverAndSphere( b3PlaneResult* result, const b3Sphere* shape, const b3Capsule* mover );
 int b3CollideMoverAndCapsule( b3PlaneResult* result, const b3Capsule* shape, const b3Capsule* mover );

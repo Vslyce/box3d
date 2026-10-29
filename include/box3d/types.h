@@ -1712,6 +1712,42 @@ typedef struct b3Sweep
 	b3Quat q2;			///< Ending world rotation
 } b3Sweep;
 
+/// Completion status for a kinematic mesh impact query. Failure never means "no impact".
+typedef enum b3MeshImpactQueryStatus
+{
+	b3_meshImpactComplete,
+	b3_meshImpactInvalidInput,
+	b3_meshImpactWorldLocked,
+	b3_meshImpactCapacityExceeded,
+	b3_meshImpactUnsupportedShape,
+	b3_meshImpactFailed
+} b3MeshImpactQueryStatus;
+
+/// Options for free-motion prediction of kinematic meshes versus dynamic convex shapes.
+typedef struct b3MeshImpactQueryDef
+{
+	float timeStep;	  ///< Positive finite prediction interval, in seconds.
+	int maxPairs;	  ///< Maximum candidate shape pairs tested. Zero means unlimited.
+	int maxTriangles; ///< Maximum candidate triangles tested across all pairs. Zero means
+					  ///< unlimited.
+} b3MeshImpactQueryDef;
+
+/// Defaults: 1/60 second, 1024 pairs and 65536 triangles. Budgets may be changed or disabled.
+B3_API b3MeshImpactQueryDef b3DefaultMeshImpactQueryDef( void );
+
+/// Published only when every eligible candidate has been considered successfully.
+typedef struct b3MeshImpactResult
+{
+	/// Earliest positive fraction, or 1 with null IDs if none is found before the endpoint.
+	float fraction;
+	b3ShapeId meshShapeId; ///< Kinematic mesh at the earliest impact.
+	b3ShapeId shapeId;	   ///< Dynamic convex shape at the earliest impact.
+	/// Candidate shape pairs tested after collision filtering and swept-bounds pruning.
+	int pairCount;
+	/// Candidate triangles tested, including triangles rejected by one-sidedness.
+	int triangleCount;
+} b3MeshImpactResult;
+
 /// Time of impact input
 typedef struct b3TOIInput
 {

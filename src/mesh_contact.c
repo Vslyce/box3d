@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Erin Catto
 // SPDX-License-Identifier: MIT
 
+#include "body.h"
 #include "contact.h"
 #include "ctz.h"
 #include "manifold.h"
@@ -74,14 +75,33 @@ static int b3QueryHeightFieldTriangles( int* indices, int capacity, const b3Heig
 	return context.count;
 }
 
-static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTransform xfA, const b3AABB* bounds, b3Arena arena )
+static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTransform xfA,
+							const b3Shape* shapeB, b3WorldTransform xfB, bool kinematic,
+							b3Arena arena )
 {
 	B3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );
 
 	b3MeshContact* meshContact = &contact->meshContact;
 
-	// If the dynamic body didn't move out of the cached query bounds we are done!
-	if ( b3AABB_Contains( meshContact->queryBounds, *bounds ) )
+	// Cache coverage belongs to the mesh frame. World-space coverage misses
+	// triangles when a kinematic mesh moves beneath a stationary convex body.
+	b3AABB localBounds;
+	if ( kinematic )
+	{
+		// Subtract world positions before narrowing to float, preserving small mesh motion far from
+		// the origin.
+		b3Transform relative = b3InvMulWorldTransforms( xfA, xfB );
+		localBounds =
+			b3AABB_Inflate( b3ComputeShapeAABB( shapeB, relative ), B3_SPECULATIVE_DISTANCE );
+	}
+	else
+	{
+		// Preserve the established static-mesh candidate bounds and their deterministic contact
+		// ordering.
+		b3Transform meshTransform = b3ToRelativeTransform( xfA, b3Pos_zero );
+		localBounds = b3AABB_Transform( b3InvertTransform( meshTransform ), shapeB->aabb );
+	}
+	if ( b3AABB_Contains( meshContact->queryBounds, localBounds ) )
 	{
 		if ( shapeA->type == b3_meshShape )
 		{
@@ -98,17 +118,14 @@ static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTr
 	// Enlarge to the query bounds to absorb small movement
 	float radius = B3_MAX_AABB_MARGIN + B3_SPECULATIVE_DISTANCE;
 	b3Vec3 extension = { radius, radius, radius };
-	meshContact->queryBounds.lowerBound = b3Sub( bounds->lowerBound, extension );
-	meshContact->queryBounds.upperBound = b3Add( bounds->upperBound, extension );
+	meshContact->queryBounds.lowerBound = b3Sub( localBounds.lowerBound, extension );
+	meshContact->queryBounds.upperBound = b3Add( localBounds.upperBound, extension );
 
 	// Query triangles
 	int triangleCapacity = B3_MAX_MESH_CONTACT_TRIANGLES;
 	int* triangleIndices = b3Bump( &arena, B3_MAX_MESH_CONTACT_TRIANGLES * sizeof( int ) );
 
-	// Bounds are in world space. Convert to the local mesh frame. The broadphase bounds are float,
-	// so the demoted mesh transform is the matching float world frame (exact in float mode).
-	b3Transform meshTransform = b3ToRelativeTransform( xfA, b3Pos_zero );
-	b3AABB localBounds = b3AABB_Transform( b3InvertTransform( meshTransform ), meshContact->queryBounds );
+	localBounds = meshContact->queryBounds;
 	int triangleCount;
 	if ( shapeA->type == b3_meshShape )
 	{
@@ -536,7 +553,8 @@ bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact
 
 	b3TaskContext* context = b3Array_Get( world->taskContexts, workerIndex );
 
-	b3RefreshCache( contact, shapeA, xfA, &shapeB->aabb, arena );
+	bool kinematic = world->bodies.data[shapeA->bodyId].type == b3_kinematicBody;
+	b3RefreshCache( contact, shapeA, xfA, shapeB, xfB, kinematic, arena );
 
 	// Collide with triangles and build manifolds
 	b3MeshContact* meshContact = &contact->meshContact;

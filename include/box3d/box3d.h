@@ -56,6 +56,28 @@ B3_API bool b3World_IsValid( b3WorldId id );
 /// accuracy. Usually 4.
 B3_API void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount );
 
+/// Estimate the earliest positive impact fraction for a kinematic mesh and a dynamic convex shape.
+/// Uses free motion: velocities, forces/gravity, torque, damping, motion locks and speed limits.
+/// Contact/joint impulses and gyroscopic torque are not predicted. Rotation follows the usual
+/// endpoint sweep interpolation. Initial overlaps remain the contact solver's responsibility;
+/// the existing centroid fallback may return a later positive fraction for an overlapping shape.
+/// This allocation-free query does not step the world or wake bodies. The caller can advance the
+/// WHOLE world to the impact and query again for the remaining interval. Smaller intervals improve
+/// prediction accuracy; this is not an automatic continuous solver or a guarantee for arbitrary
+/// motion. Collision masks, groups, joint exclusions, sensors, disabled bodies, and the world's
+/// custom filter are respected. Custom filters run with the world locked and must not mutate it.
+/// There is no world-population or fixed timestep limit. Budgets limit candidate pairs and triangles,
+/// not body enumeration, BVH node visits or wall time. Output is unchanged unless the query
+/// completes.
+B3_API b3MeshImpactQueryStatus b3World_QueryKinematicMeshImpactWithOptions(
+	b3WorldId worldId, const b3MeshImpactQueryDef* def, b3MeshImpactResult* result );
+
+/// Compatibility entry point. maxPairs must be positive; triangle tests are unlimited.
+/// Returns true only for a complete query. Outputs are unchanged on failure.
+/// Prefer the options form for failure diagnostics, triangle budgets, and hit shape IDs.
+B3_API bool b3World_QueryKinematicMeshImpact( b3WorldId worldId, float timeStep, int maxPairs,
+											  float* fraction, int* pairCount );
+
 /// Call this to draw shapes and other debug draw data
 B3_API void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits );
 
@@ -900,8 +922,9 @@ B3_API b3ShapeId b3CreateTransformedHullShape( b3BodyId bodyId, const b3ShapeDef
 											   b3Vec3 scale );
 
 /// Create a mesh hull shape and attach it to a body. The shape definition is fully cloned but the
-/// mesh is not. Contacts are not created until the next time step. Mesh collision only creates
-/// contacts on static bodies.
+/// mesh is not. Contacts are not created until the next time step. Static and kinematic meshes
+/// generate contacts with convex dynamic shapes. For fast moving meshes, use the optional impact
+/// query with whole-world interval subdivision. Dynamic meshes are unsupported.
 /// @warning this holds reference to the input mesh data which must remain valid for the lifetime of
 /// this shape
 /// @return the shape id for accessing the shape
