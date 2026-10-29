@@ -238,6 +238,7 @@ typedef struct b3World
 	int restitutionIterations;
 	bool enableRestitutionPropagation;
 	float maxLinearSpeed;
+	float isotropicInertiaTolerance;
 	float contactSpeed;
 	float contactHertz;
 	float contactDampingRatio;
@@ -262,6 +263,7 @@ typedef struct b3World
 	void* customFilterContext;
 
 	int workerCount;
+	int simdWidth;
 	b3EnqueueTaskCallback* enqueueTaskFcn;
 	b3FinishTaskCallback* finishTaskFcn;
 	void* userTaskContext;
@@ -296,6 +298,9 @@ typedef struct b3World
 	bool enableSpeculative;
 	bool inUse;
 } b3World;
+
+// Wake filtered sleeping neighbors of awake kinematic meshes before contact generation.
+void b3WakeMovingMeshNeighbors( b3World* world, float timeStep );
 
 b3World* b3GetUnlockedWorldFromId( b3WorldId id );
 b3World* b3GetWorldFromId( b3WorldId id );

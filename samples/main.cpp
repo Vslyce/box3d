@@ -14,6 +14,7 @@
 #include "gfx/debug_adapter.h"
 #include "gfx/keycodes.h"
 #include "gfx/renderer.h"
+#include "gfx/text.h"
 #include "host/gui.h"
 #include "sample.h"
 #include "sokol_app.h"
@@ -160,6 +161,17 @@ static void OnEvent( const sapp_event* e )
 		s_context.camera.OnEvent( e );
 	}
 
+	// Releases go to the key table even when the UI captures them. Otherwise Ctrl let go
+	// while the Ctrl+O picker is open stays down in the next sample.
+	if ( e->type == SAPP_EVENTTYPE_KEY_UP )
+	{
+		SetKeyDown( e->key_code, false );
+	}
+	else if ( e->type == SAPP_EVENTTYPE_UNFOCUSED )
+	{
+		ClearKeysDown();
+	}
+
 	if ( uiCaptured )
 	{
 		return;
@@ -181,7 +193,18 @@ static void OnEvent( const sapp_event* e )
 				switch ( e->key_code )
 				{
 					case SAPP_KEYCODE_TAB:
-						s_context.showUI = !s_context.showUI;
+						if ( mods & SAPP_MODIFIER_SHIFT )
+						{
+							bool hide = s_context.showUI || s_context.showText;
+							s_context.showUI = !hide;
+							s_context.showText = !hide;
+						}
+						else
+						{
+							// Plain Tab also restores text so it always leads back to the full view
+							s_context.showUI = !s_context.showUI;
+							s_context.showText = true;
+						}
 						break;
 
 					case SAPP_KEYCODE_ESCAPE:
@@ -265,10 +288,6 @@ static void OnEvent( const sapp_event* e )
 						break;
 				}
 			}
-			break;
-
-		case SAPP_EVENTTYPE_KEY_UP:
-			SetKeyDown( e->key_code, false );
 			break;
 
 		case SAPP_EVENTTYPE_CHAR:
@@ -405,6 +424,12 @@ static void OnFrame( void )
 
 	s_context.sample->Step();
 	s_context.sample->Render();
+
+	// Before RenderFrame so world labels drop too
+	if ( s_context.showText == false )
+	{
+		ResetTextArena();
+	}
 
 	FrameInput fi{};
 	fi.view = camera.View();
@@ -554,22 +579,18 @@ static sapp_desc BuildAppDesc( int argc, char** argv )
 	return desc;
 }
 
-// We own main (SOKOL_NO_ENTRY) so the leak dump can run after sapp_run returns,
-// once sokol has torn down its window and context. On Windows sapp_run returns
-// after that teardown; on macOS it may not return, so the dump is Windows only.
+// The leak dump runs at CRT exit, after static destructors. Libraries such as ImGuizmo keep
+// heap backed containers at file scope, and a dump right after sapp_run reports them.
 int main( int argc, char** argv )
 {
 #if defined( _MSC_VER )
 	_CrtSetReportMode( _CRT_WARN, _CRTDBG_MODE_DEBUG | _CRTDBG_MODE_FILE );
 	_CrtSetReportFile( _CRT_WARN, _CRTDBG_FILE_STDOUT );
+	_CrtSetDbgFlag( _CrtSetDbgFlag( _CRTDBG_REPORT_FLAG ) | _CRTDBG_LEAK_CHECK_DF );
 #endif
 
 	sapp_desc desc = BuildAppDesc( argc, argv );
 	sapp_run( &desc );
-
-#if defined( _MSC_VER )
-	_CrtDumpMemoryLeaks();
-#endif
 
 	return s_exitCode;
 }
